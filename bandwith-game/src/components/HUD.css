@@ -1,0 +1,90 @@
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.hud-top-left {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+}
+
+.hud-score {
+  font-size: 32px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 2px;
+  text-shadow: 0 0 12px rgba(96,165,250,0.4);
+}
+
+.hud-accuracy {
+  font-size: 14px;
+  color: rgba(255,255,255,0.5);
+  margin-top: 2px;
+}
+
+.hud-top-right {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+}
+
+.hud-combo {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
+.combo-num {
+  font-size: 52px;
+  font-weight: 800;
+  color: #facc15;
+  text-shadow: 0 0 16px rgba(250,204,21,0.5);
+  line-height: 1;
+}
+
+.combo-x {
+  font-size: 22px;
+  color: rgba(250,204,21,0.7);
+}
+
+.hud-bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
+.hp-track {
+  height: 5px;
+  background: rgba(255,255,255,0.08);
+}
+
+.hp-fill {
+  height: 100%;
+  transition: width 0.15s ease, background 0.3s ease;
+}
+
+.lane-feedback {
+  position: absolute;
+  bottom: calc(18% + 52px);
+  left: calc(
+    (100% - min(55vw, 340px)) / 2
+    + var(--lane-idx) * (min(55vw, 340px) / var(--lane-count))
+    + min(55vw, 340px) / var(--lane-count) / 2
+  );
+  transform: translateX(-50%);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 8px currentColor;
+  animation: feedbackPop 0.5s ease-out forwards;
+}
+
+@keyframes feedbackPop {
+  0%   { opacity: 1; transform: translateX(-50%) translateY(0)    scale(1.2); }
+  40%  { opacity: 1; transform: translateX(-50%) translateY(-18px) scale(1);   }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-40px) scale(0.9); }
+}
