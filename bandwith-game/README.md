@@ -1,16 +1,22 @@
-# React + Vite
+# BandWith
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A four-lane rhythm game built with React and a canvas renderer.
 
-Currently, two official plugins are available:
+Hit each note as it lands on the line: `D` `F` `J` `K` on a keyboard, or tap the lanes on a touch screen. `Esc` pauses.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Run
 
-## React Compiler
+```sh
+npm install
+npm run dev     # play at http://localhost:5173
+npm test        # scoring and timing checks
+npm run build
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## How it works
 
-## Expanding the ESLint configuration
+- `src/hooks/useGameEngine.js` holds the game: timing windows, score, combo, HP, and the audio. The `AudioContext` is the game clock, so pausing it pauses notes and sound together.
+- `src/components/GameCanvas.jsx` draws lanes, notes and hit effects every frame.
+- `src/assets/beatmaps/sample.json` is the chart: a list of `{ "time": ms, "lane": "d" | "f" | "j" | "k" }`.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Scoring: perfect within 50 ms (300), good within 100 ms (100), ok within 150 ms (50), plus 10% for every 10 combo. A miss costs 12 HP; a hit restores 3.

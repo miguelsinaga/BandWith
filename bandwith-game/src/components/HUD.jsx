@@ -1,61 +1,43 @@
-import { LANES } from '../hooks/useGameEngine'
+import { accuracy } from '../hooks/useGameEngine'
 import './HUD.css'
 
-const LABEL = { perfect: 'PERFECT', good: 'GOOD', ok: 'OK', miss: 'MISS' }
-const COLOR = {
-  perfect: '#60a5fa',
-  good:    '#34d399',
-  ok:      '#facc15',
-  miss:    '#f87171',
-}
+export default function HUD({ stats, countdown, onPause }) {
+  const { score, combo, hp } = stats
+  const hpLevel = hp > 50 ? 'high' : hp > 25 ? 'mid' : 'low'
 
-export default function HUD({ score, combo, hp, accuracy, hitFeedback }) {
   return (
     <div className="hud">
-
-      <div className="hud-top-left">
-        <div className="hud-score">{score.toLocaleString()}</div>
-        <div className="hud-accuracy">{accuracy.toFixed(1)}%</div>
+      <div
+        className="hp-track"
+        role="progressbar"
+        aria-label="HP"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={hp}
+      >
+        <div className={`hp-fill hp-${hpLevel}`} style={{ transform: `scaleX(${hp / 100})` }} />
       </div>
 
-      <div className="hud-top-right">
-        {combo > 1 && (
-          <div className="hud-combo">
-            <span className="combo-num">{combo}</span>
-            <span className="combo-x">x</span>
-          </div>
-        )}
+      <div className="hud-score">
+        <div className="hud-score-num">{score.toLocaleString()}</div>
+        <div className="hud-accuracy">{accuracy(stats).toFixed(1)}%</div>
       </div>
 
-      <div className="hud-bottom">
-        <div className="hp-track">
-          <div
-            className="hp-fill"
-            style={{
-              width: `${hp}%`,
-              background: hp > 50 ? '#34d399' : hp > 25 ? '#facc15' : '#f87171',
-            }}
-          />
+      <button className="hud-pause" onClick={onPause} aria-label="Pause">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path fill="currentColor" d="M7 5h3v14H7zM14 5h3v14h-3z" />
+        </svg>
+      </button>
+
+      {combo > 1 && (
+        <div className="hud-combo">
+          {/* key restarts the pop animation on every hit */}
+          <span key={combo} className="hud-combo-num">{combo}</span>
+          <span className="hud-combo-label">COMBO</span>
         </div>
-      </div>
+      )}
 
-      {hitFeedback.map(f => {
-        const laneIdx = LANES.findIndex(l => l.key === f.lane)
-        return (
-          <div
-            key={f.id}
-            className="lane-feedback"
-            style={{
-              color: COLOR[f.type],
-              '--lane-idx':   laneIdx,
-              '--lane-count': LANES.length,
-            }}
-          >
-            {LABEL[f.type]}
-          </div>
-        )
-      })}
-
+      {countdown > 0 && <div key={countdown} className="hud-countdown">{countdown}</div>}
     </div>
   )
 }

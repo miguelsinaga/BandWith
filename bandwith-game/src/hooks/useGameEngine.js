@@ -1,191 +1,205 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 
 export const LANES = [
-  { key: 'd', label: 'D', color: '#60a5fa' },
-  { key: 'f', label: 'F', color: '#34d399' },
-  { key: 'j', label: 'J', color: '#f472b6' },
-  { key: 'k', label: 'K', color: '#facc15' },
+  { key: 'd', label: 'D', color: '#60a5fa', freq: 392 },
+  { key: 'f', label: 'F', color: '#34d399', freq: 440 },
+  { key: 'j', label: 'J', color: '#f472b6', freq: 523 },
+  { key: 'k', label: 'K', color: '#facc15', freq: 587 },
 ]
 
-export const LANE_KEYS  = LANES.map(l => l.key)
+export const LANE_KEYS   = LANES.map(l => l.key)
 export const APPROACH_MS = 1600
 
-const TIMING   = { perfect: 50, good: 100, ok: 150 }
-const SCORE_VAL = { perfect: 300, good: 100, ok: 50, miss: 0 }
+const LEAD_IN_MS = 3000   // countdown before song time 0
+const BEAT_MS    = 400    // the sample beatmap sits on a 150 BPM grid
+const TIMING     = { perfect: 50, good: 100, ok: 150 }
+const SCORE_VAL  = { perfect: 300, good: 100, ok: 50 }
+const BEST_KEY   = 'bandwith.best'
+
+export const NEW_STATS = { score: 0, combo: 0, maxCombo: 0, hp: 100, perfect: 0, good: 0, ok: 0, miss: 0 }
+
+export function judgeTiming(diffMs) {
+  const d = Math.abs(diffMs)
+  return d <= TIMING.perfect ? 'perfect' : d <= TIMING.good ? 'good' : d <= TIMING.ok ? 'ok' : null
+}
+
+export function applyHit(s, type) {
+  if (type === 'miss') return { ...s, miss: s.miss + 1, combo: 0, hp: Math.max(0, s.hp - 12) }
+  const combo = s.combo + 1
+  return {
+    ...s,
+    [type]: s[type] + 1,
+    combo,
+    maxCombo: Math.max(s.maxCombo, combo),
+    // +10% per 10 combo, kept in integers
+    score: s.score + SCORE_VAL[type] * (10 + Math.floor(combo / 10)) / 10,
+    hp: Math.min(100, s.hp + 3),
+  }
+}
+
+export function accuracy(s) {
+  const total = s.perfect + s.good + s.ok + s.miss
+  return total ? (s.perfect * 300 + s.good * 100 + s.ok * 50) / (total * 3) : 100
+}
+
+export function grade(s) {
+  if (s.hp <= 0) return 'F'
+  const a = accuracy(s)
+  return a >= 95 ? 'S' : a >= 90 ? 'A' : a >= 80 ? 'B' : a >= 70 ? 'C' : 'D'
+}
+
+export function readBest() {
+  try { return Number(localStorage.getItem(BEST_KEY)) || 0 } catch { return 0 }
+}
+
+function blip(ctx, freq, at = ctx.currentTime, dur = 0.09, vol = 0.12, type = 'triangle') {
+  const osc  = ctx.createOscillator()
+  const gain = ctx.createGain()
+  osc.type = type
+  osc.frequency.setValueAtTime(freq, at)
+  gain.gain.setValueAtTime(vol, at)
+  gain.gain.exponentialRampToValueAtTime(0.001, at + dur)
+  osc.connect(gain).connect(ctx.destination)
+  osc.start(at)
+  osc.stop(at + dur)
+}
+
+// shortcut: synthesized click track instead of a real song, swap for an audio file (howler is installed) once there is one
+function scheduleBacking(ctx, zero, lengthMs) {
+  for (let s = 3; s > 0; s--) blip(ctx, 660, zero - s, 0.12, 0.1, 'sine')
+  for (let t = 0; t <= lengthMs; t += BEAT_MS / 2) {
+    const kick = t % BEAT_MS === 0
+    blip(ctx, kick ? 70 : 1800, zero + t / 1000, kick ? 0.14 : 0.03, kick ? 0.35 : 0.03, kick ? 'sine' : 'square')
+  }
+}
 
 export function useGameEngine() {
-  const [notes, setNotes]             = useState([])
-  const [gameState, setGameState]     = useState('idle')
-  const [pressedLanes, setPressedLanes] = useState({})
-  const [score, setScore]             = useState(0)
-  const [combo, setCombo]             = useState(0)
-  const [maxCombo, setMaxCombo]       = useState(0)
-  const [hp, setHp]                   = useState(100)
-  const [accuracy, setAccuracy]       = useState(100)
-  const [hitFeedback, setHitFeedback] = useState([])
+  const [phase, setPhase]         = useState('menu')   // menu | playing | paused | result
+  const [stats, setStats]         = useState(NEW_STATS)
+  const [countdown, setCountdown] = useState(0)
+  const [best, setBest]           = useState(readBest)
+  const [newBest, setNewBest]     = useState(false)
 
-  const audioCtxRef     = useRef(null)
-  const startTimeRef    = useRef(0)
-  const beatmapRef      = useRef([])
-  const nextNoteIdxRef  = useRef(0)
-  const noteIdRef       = useRef(0)
-  const rafRef          = useRef(null)
-  const missIntervalRef = useRef(null)
-  const gameActiveRef   = useRef(false)
-  const comboRef        = useRef(0)
-  const scoreRef        = useRef(0)
-  const hitsRef         = useRef({ perfect: 0, good: 0, ok: 0, miss: 0, total: 0 })
+  // The AudioContext is the game clock: suspending it pauses notes and sound together.
+  const ctxRef     = useRef(null)
+  const startRef   = useRef(0)
+  const beatmapRef = useRef([])
+  const nextRef    = useRef(0)
+  const statsRef   = useRef(NEW_STATS)
+  // Read by the canvas every frame, so they stay out of React state.
+  const notesRef   = useRef([])
+  const fxRef      = useRef([])
+  const pressedRef = useRef({})
 
-  const getCurrentTime = useCallback(() => {
-    if (!audioCtxRef.current) return 0
-    return (audioCtxRef.current.currentTime - startTimeRef.current) * 1000
+  const time = useCallback(() => {
+    const ctx = ctxRef.current
+    return ctx ? (ctx.currentTime - startRef.current) * 1000 - LEAD_IN_MS : -LEAD_IN_MS
   }, [])
 
-  const endGame = useCallback(() => {
-    if (!gameActiveRef.current) return
-    gameActiveRef.current = false
-    cancelAnimationFrame(rafRef.current)
-    clearInterval(missIntervalRef.current)
-    setGameState('result')
+  const judge = useCallback((type, lane) => {
+    statsRef.current = applyHit(statsRef.current, type)
+    setStats(statsRef.current)
+    const at = performance.now()
+    fxRef.current = [...fxRef.current.filter(f => at - f.at < 600), { lane, type, at }]
+    if (type !== 'miss') blip(ctxRef.current, LANES.find(l => l.key === lane).freq)
   }, [])
 
-  const calcAccuracy = useCallback(() => {
-    const h = hitsRef.current
-    if (h.total === 0) return 100
-    const weighted    = h.perfect * 300 + h.good * 100 + h.ok * 50
-    const maxWeighted = h.total * 300
-    return Math.round((weighted / maxWeighted) * 10000) / 100
-  }, [])
+  useEffect(() => {
+    if (phase !== 'playing') return
+    let raf
+    const tick = () => {
+      const now = time()
+      const bm  = beatmapRef.current
+      setCountdown(Math.max(0, Math.ceil(-now / 1000)))
 
-  const showFeedback = useCallback((type, lane) => {
-    const id = Date.now() + Math.random()
-    setHitFeedback(prev => [...prev, { id, type, lane }])
-    setTimeout(() => {
-      setHitFeedback(prev => prev.filter(f => f.id !== id))
-    }, 500)
-  }, [])
+      while (nextRef.current < bm.length && bm[nextRef.current].time - APPROACH_MS <= now) {
+        const n = bm[nextRef.current]
+        notesRef.current.push({ id: nextRef.current++, lane: n.lane, hitTime: n.time })
+      }
 
-  const registerHit = useCallback((type, lane) => {
-    hitsRef.current[type]++
-    hitsRef.current.total++
-
-    if (type !== 'miss') {
-      comboRef.current++
-      const bonus = Math.floor(comboRef.current / 10)
-      scoreRef.current += SCORE_VAL[type] * (1 + bonus * 0.1)
-      setScore(Math.floor(scoreRef.current))
-      setCombo(comboRef.current)
-      setMaxCombo(prev => Math.max(prev, comboRef.current))
-      setHp(prev => Math.min(100, prev + 3))
-    } else {
-      comboRef.current = 0
-      setCombo(0)
-      setHp(prev => {
-        const next = prev - 12
-        if (next <= 0) { endGame(); return 0 }
-        return next
+      notesRef.current = notesRef.current.filter(n => {
+        if (now - n.hitTime <= TIMING.ok) return true
+        judge('miss', n.lane)
+        return false
       })
+
+      const s      = statsRef.current
+      const failed = s.hp <= 0
+      const done   = nextRef.current >= bm.length && !notesRef.current.length
+        && now > (bm.at(-1)?.time ?? 0) + 800
+
+      if (!failed && !done) { raf = requestAnimationFrame(tick); return }
+
+      ctxRef.current.suspend()
+      const prev = readBest()
+      if (s.score > prev) {
+        try { localStorage.setItem(BEST_KEY, s.score) } catch { /* private mode: best just isn't kept */ }
+        setBest(s.score)
+      }
+      setNewBest(s.score > prev)
+      setPhase('result')
     }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [phase, time, judge])
 
-    setAccuracy(calcAccuracy())
-    showFeedback(type, lane)
-  }, [calcAccuracy, showFeedback, endGame])
-
-  const spawnLoop = useCallback(() => {
-    if (!gameActiveRef.current) return
-    const now = getCurrentTime()
-    const bm  = beatmapRef.current
-
-    while (
-      nextNoteIdxRef.current < bm.length &&
-      bm[nextNoteIdxRef.current].time - APPROACH_MS <= now
-    ) {
-      const note = bm[nextNoteIdxRef.current]
-      const id   = noteIdRef.current++
-      setNotes(prev => [...prev, { id, lane: note.lane, hitTime: note.time }])
-      nextNoteIdxRef.current++
-    }
-
-    if (nextNoteIdxRef.current >= bm.length) {
-      setNotes(prev => {
-        if (prev.length === 0) { setTimeout(endGame, 800); return prev }
-        return prev
-      })
-    }
-
-    rafRef.current = requestAnimationFrame(spawnLoop)
-  }, [getCurrentTime, endGame])
-
-  const startGame = useCallback((beatmap, audioCtx, audioStartTime) => {
-    beatmapRef.current     = [...beatmap].sort((a, b) => a.time - b.time)
-    audioCtxRef.current    = audioCtx
-    startTimeRef.current   = audioStartTime
-    nextNoteIdxRef.current = 0
-    noteIdRef.current      = 0
-    gameActiveRef.current  = true
-    comboRef.current       = 0
-    scoreRef.current       = 0
-    hitsRef.current        = { perfect: 0, good: 0, ok: 0, miss: 0, total: 0 }
-
-    setNotes([])
-    setScore(0)
-    setCombo(0)
-    setMaxCombo(0)
-    setHp(100)
-    setAccuracy(100)
-    setHitFeedback([])
-    setGameState('playing')
-
-    missIntervalRef.current = setInterval(() => {
-      if (!gameActiveRef.current) return
-      const now = getCurrentTime()
-      setNotes(prev => {
-        const remaining = []
-        for (const n of prev) {
-          if (now - n.hitTime > TIMING.ok + 50) {
-            registerHit('miss', n.lane)
-          } else {
-            remaining.push(n)
-          }
-        }
-        return remaining
-      })
-    }, 50)
-
-    rafRef.current = requestAnimationFrame(spawnLoop)
-  }, [getCurrentTime, registerHit, spawnLoop])
-
-  const pressLane = useCallback((laneKey) => {
-    if (!gameActiveRef.current) return
-    const now = getCurrentTime()
-
-    setNotes(prev => {
-      const laneNotes = prev.filter(n => n.lane === laneKey)
-      if (laneNotes.length === 0) return prev
-
-      const earliest = laneNotes.reduce((a, b) =>
-        Math.abs(now - a.hitTime) < Math.abs(now - b.hitTime) ? a : b
-      )
-      const diff = Math.abs(now - earliest.hitTime)
-      if (diff > TIMING.ok) return prev
-
-      let type = 'ok'
-      if (diff <= TIMING.perfect) type = 'perfect'
-      else if (diff <= TIMING.good) type = 'good'
-
-      registerHit(type, laneKey)
-      return prev.filter(n => n.id !== earliest.id)
-    })
-  }, [getCurrentTime, registerHit])
-
-  const setLanePressed = useCallback((key, pressed) => {
-    setPressedLanes(prev => ({ ...prev, [key]: pressed }))
+  // Must be called from a user gesture so the browser lets the AudioContext run.
+  const start = useCallback((beatmap) => {
+    ctxRef.current?.close()
+    const ctx = new AudioContext()
+    ctxRef.current     = ctx
+    startRef.current   = ctx.currentTime
+    beatmapRef.current = [...beatmap].sort((a, b) => a.time - b.time)
+    nextRef.current    = 0
+    notesRef.current   = []
+    fxRef.current      = []
+    statsRef.current   = NEW_STATS
+    setStats(NEW_STATS)
+    setCountdown(LEAD_IN_MS / 1000)
+    setPhase('playing')
+    scheduleBacking(ctx, ctx.currentTime + LEAD_IN_MS / 1000, beatmapRef.current.at(-1)?.time ?? 0)
   }, [])
+
+  const pause = useCallback(() => {
+    if (phase !== 'playing') return
+    ctxRef.current.suspend()
+    setPhase('paused')
+  }, [phase])
+
+  const resume = useCallback(() => {
+    if (phase !== 'paused') return
+    ctxRef.current.resume()
+    setPhase('playing')
+  }, [phase])
+
+  const quit = useCallback(() => {
+    ctxRef.current?.close()
+    ctxRef.current   = null
+    notesRef.current = []
+    fxRef.current    = []
+    setPhase('menu')
+  }, [])
+
+  const press = useCallback((key) => {
+    pressedRef.current[key] = true
+    if (phase !== 'playing') return
+    const now    = time()
+    const inLane = notesRef.current.filter(n => n.lane === key)
+    if (!inLane.length) return
+    const note = inLane.reduce((a, b) =>
+      Math.abs(now - a.hitTime) <= Math.abs(now - b.hitTime) ? a : b
+    )
+    const type = judgeTiming(now - note.hitTime)
+    if (!type) return
+    notesRef.current = notesRef.current.filter(n => n !== note)
+    judge(type, key)
+  }, [phase, time, judge])
+
+  const release = useCallback((key) => { pressedRef.current[key] = false }, [])
 
   return {
-    notes, gameState, pressedLanes,
-    score, combo, maxCombo, hp, accuracy, hitFeedback,
-    setGameState, startGame, pressLane,
-    setLanePressed, getCurrentTime,
+    phase, stats, countdown, best, newBest,
+    notesRef, fxRef, pressedRef,
+    time, start, pause, resume, quit, press, release,
   }
 }
